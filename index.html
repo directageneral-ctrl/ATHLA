@@ -84,7 +84,7 @@
   <input id="file" type="file" accept="image/*" hidden>
   <input id="vfile" type="file" accept="video/*" hidden>
   <span class="hint">Drag to orbit · Wheel to zoom · Click door / light switch / screen · Drag chairs &amp; table to rearrange<br>
-  Meta Quest: trigger or pinch = grab &amp; click · squeeze = rotate held object 45° · walk freely in room scale<br>
+  Meta Quest: trigger or pinch = grab &amp; click · squeeze = rotate held object 45° (in AR with nothing held: rotates the booth) · aim at the floor and pull the trigger to place the booth in AR<br>
   Android phone (Chrome + ARCore, HTTPS): Enter AR → aim at the floor → tap to place the booth at 1:1 scale → tap to interact, drag chairs &amp; table</span>
 </div>
 
@@ -847,7 +847,10 @@ for(let i=0;i<2;i++){
     else doAction(root);
   });
   c.addEventListener('selectend',()=>releaseHeld(c));
-  c.addEventListener('squeezestart',()=>{ if(c.userData.held) c.userData.held.rotation.y+=Math.PI/4; });
+  c.addEventListener('squeezestart',()=>{
+    if(c.userData.held){ c.userData.held.rotation.y+=Math.PI/4; return; }
+    if(xrIsAR){ if(ar.placed) world.rotation.y+=Math.PI/4; else ar.yaw+=Math.PI/4; }
+  });
   scene.add(c);
   const grip=renderer.xr.getControllerGrip(i);
   grip.add(controllerFactory.createControllerModel(grip));
@@ -981,7 +984,7 @@ function goView(k){
 }
 
 /* ================= AR: placement on the real floor + phone touch input ================= */
-const ar={placed:false,placeRequested:false,hitTestSource:null,hit:null,hasHit:false,
+const ar={placed:false,placeRequested:false,hitTestSource:null,rayInput:null,hit:null,hasHit:false,
           hitPos:new THREE.Vector3(),anchor:null,yaw:0,hintUntil:0};
 let lite=false;
 const arMsgEl=$('arMsg');
@@ -1102,7 +1105,7 @@ function updateScreenDrag(frame){
   if(p){ screenDrag.root.position.copy(p).add(screenDrag.offset); clampMovable(screenDrag.root); }
 }
 
-/* Lite mode: fewer lights and no shadows, for slower phones */
+/* Lite mode: fewer lights and no shadows, for slower devices */
 function setLite(on){
   lite=on; sync(arLiteBtn,on);
   facadeLights.forEach(({l})=>{ if(!hallLights.includes(l)) l.visible=!on; });
@@ -1160,12 +1163,31 @@ renderer.xr.addEventListener('sessionstart',()=>{
     hall.visible=false; scene.background=null; scene.fog=null;
     arShadow.visible=true;
     hallLights.forEach(l=>l.visible=false);
-    world.visible=false; ar.placed=false; ar.placeRequested=false; ar.yaw=0; ar.hasHit=false;
+    world.visible=false; ar.placed=false; ar.placeRequested=false; ar.yaw=0; ar.hasHit=false; ar.rayInput=null;
     arMsgText=''; setArMsg('Starting surface detection…');
     session.requestReferenceSpace('viewer')
       .then(vs=>session.requestHitTestSource({space:vs}))
-      .then(src=>{ ar.hitTestSource=src; })
+      .then(src=>{ if(ar.rayInput) src.cancel(); else ar.hitTestSource=src; })
       .catch(err=>{ console.warn('hit-test unavailable',err); setArMsg('Surface detection is not available on this device.'); });
+    // headset: aim with a controller / hand ray instead of head gaze
+    const useRay=is=>{
+      if(ar.rayInput||is.targetRayMode!=='tracked-pointer') return;
+      ar.rayInput=is;
+      session.requestHitTestSource({space:is.targetRaySpace}).then(src=>{
+        if(ar.hitTestSource){ try{ar.hitTestSource.cancel();}catch(e){} }
+        ar.hitTestSource=src;
+      }).catch(()=>{ ar.rayInput=null; });
+    };
+    session.inputSources.forEach(useRay);
+    session.addEventListener('inputsourceschange',()=>{
+      if(ar.rayInput && !Array.from(session.inputSources).includes(ar.rayInput)){
+        ar.rayInput=null;
+        if(ar.hitTestSource){ try{ar.hitTestSource.cancel();}catch(e){} ar.hitTestSource=null; }
+      }
+      session.inputSources.forEach(useRay);
+    });
+    // Quest has no toolbar, so start in Lite mode (add ?full to the URL to skip this)
+    if(onQuest && !location.search.includes('full')) setLite(true);
   }
   renderer.xr.setFoveation(0.6);
 });
@@ -1179,7 +1201,7 @@ renderer.xr.addEventListener('sessionend',()=>{
   world.position.set(0,0,0); world.rotation.set(0,0,0); world.visible=true;
   if(ar.anchor){ try{ar.anchor.delete();}catch(e){} }
   if(ar.hitTestSource){ try{ar.hitTestSource.cancel();}catch(e){} }
-  ar.anchor=null; ar.hitTestSource=null; ar.placed=false; ar.hasHit=false; ar.hit=null; ar.placeRequested=false;
+  ar.anchor=null; ar.hitTestSource=null; ar.rayInput=null; ar.placed=false; ar.hasHit=false; ar.hit=null; ar.placeRequested=false;
   screenDrag=null; setArMsg('');
   xrControllers.forEach(c=>releaseHeld(c));
 });
